@@ -4,6 +4,8 @@ import re
 import requests
 import folium
 from streamlit_folium import st_folium
+import xml.etree.ElementTree as ET
+from datetime import time, timedelta
 
 # Start with the page config
 
@@ -12,7 +14,7 @@ from streamlit_folium import st_folium
 # =====
 st.set_page_config(
     page_title="Food Support Accessibility Research",
-    layout="wide",
+    layout="wide"
 )
 
 # =====
@@ -20,6 +22,7 @@ st.set_page_config(
 # =====
 file_path = "dataset_ae1.csv"
 postcodes_api = "https://api.postcodes.io/postcodes" # use it for lan/lon based on postcode
+kml_boundaries = "2506.kml"
 
 # =====
 # Defaults for map postioning over east london
@@ -153,9 +156,74 @@ def get_marker_color(category:str) -> str:
 
 # =====
 # Helper Function
+# Opening Day Sorting (to keep the filter convenient)
+# =====
+def sort_open_days(days: list[str]) -> list[str]:
+    """
+    Sort days ijn the week for better UX
+    """
+    days_order = {
+        "Mon":1,
+        "Tue":2,
+        "Wed":3,
+        "Thu":4,
+        "Fri":5,
+        "Sat":6,
+        "Sun":7,
+    }
+
+    return sorted(days, key=lambda day: days_order[day])
+
+# =====
+# Helper Function
+# Parcing the time from the dataset
+# =====
+def parse_time(time):
+    """
+    Converts a string to datetime object
+    If time cannot be converted, returns None
+    """
+    parsed = pd.to_datetime(time, format="%H:%M", errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.time()
+
+# =====
+# Helper Function
+# Load the borough boundaries from the KML file
+# =====
+@st.cache_data(show_spinner=False)
+def load_boundary(filepath: str):
+    """
+    Loads the boundaries for Tower Hamlets borough from the KML file
+    *KML stores as lon/lat, folium needs lat/lon
+    """
+    tree = ET.parse(filepath)
+    root = tree.getroot()
+
+    ns = {"kml": "http://www.opengis.net/kml/2.2"}
+    coords_text = root.find(".//kml:coordinates", ns).text.strip()
+
+    coords = []
+
+    for point in coords_text.split():
+        parts = point.split(",")
+        lon = float(parts[0])
+        lat = float(parts[1])
+        coords.append((lat, lon))
+
+    return coords
+
+
+# =====
+# Helper Function
 # Create the Map
 # =====
-def map_creator(locations_df: pd.DataFrame) -> folium.Map:
+def map_creator(
+        locations_df: pd.DataFrame,
+        boundary_coords,
+        show_boundary: bool
+) -> folium.Map:
     """
     Creates a basic folium map and maps the coordinates
     """
@@ -165,6 +233,17 @@ def map_creator(locations_df: pd.DataFrame) -> folium.Map:
         zoom_start=default_map_zoom,
         tiles="OpenStreetMap"
     )
+
+    # Draw borough boundaries on request
+    if show_boundary and boundary_coords:
+        folium.Polygon(
+            locations=boundary_coords,
+            color="purple",
+            weight=2,
+            fill=True,
+            fill_opacity=0.05,
+            tooltip="Tower Hamlets boundary"
+        ).add_to(m)
 
     for index, row in locations_df.iterrows():
         # for each marker add a list of info
@@ -214,18 +293,104 @@ def load_data(file_path: str) -> pd.DataFrame:
         lambda postcode: lookup.get(postcode, {}).get("longitude")
     )
 
+    # Parse times for the filters
+    df["open_time_obj"] = df["open_time"].apply(parse_time)
+    df["close_time_obj"] = df["close_time"].apply(parse_time)
+
     return df
 
 # =====
 # Main App
 # =====
 st.title("Food Support Accessibility Research")
-st.write("Version 2. Added basic mapping")
+st.write("Version 3. Added Tower Hamlets boundaries and basic filters")
 
 df = load_data(file_path)
 
+# Load boundary coordinates
+borough_boundaries = load_boundary(kml_boundaries)
+
+# Sidebar filters
+st.sidebar.header("Filters")
+
+category_options = ["All"] + sorted(df["category"].dropna().unique().tolist()) #display the options
+
+selected_category = st.sidebar.selectbox(
+    "Category",
+    category_options
+)
+
+area_options = ["All"] + sorted(df["area"].dropna().unique().tolist())
+selected_area = st.sidebar.selectbox(
+    "Area",
+    area_options
+)
+
+day_values = df["open_days"].dropna().unique().tolist()
+sorted_day_values = sort_open_days(day_values)
+
+day_options = ["All"] + sorted_day_values
+selected_day = st.sidebar.selectbox(
+    "Opening day",
+    day_options
+)
+
+# Time sliders
+st.sidebar.subheader("Opening time filters")
+
+selected_open_time = st.sidebar.slider(
+    "Minimum opening time",
+    min_value=time(0, 0),
+    max_value=time(23, 59),
+    value=time(0, 0),
+    step=timedelta(minutes=30)
+)
+
+selected_close_time = st.sidebar.slider(
+    "Latest closing time",
+    min_value=time(0, 0),
+    max_value=time(23, 59),
+    value=time(23, 59),
+    step=timedelta(minutes=30)
+)
+
+show_boundary = st.sidebar.checkbox(
+    "Show Tower Hamlets boundary",
+    value=True
+)
+
+# Apply filters
+filtered_df = df.copy()
+
+if selected_category != "All":
+    filtered_df = filtered_df[
+        filtered_df["category"] == selected_category
+    ]
+
+if selected_area != "All":
+    filtered_df = filtered_df[
+        filtered_df["area"] == selected_area
+    ]
+
+# Apply day filter first
+if selected_day != "All":
+    filtered_df = filtered_df[
+        filtered_df["open_days"] == selected_day
+    ]
+
+# Then apply time filters to the already filtered rows
+filtered_df = filtered_df[
+    (filtered_df["open_time_obj"].notna())
+    &
+    (filtered_df["close_time_obj"].notna())
+    &
+    (filtered_df["open_time_obj"] >= selected_open_time)
+    &
+    (filtered_df["close_time_obj"] <= selected_close_time)
+]
+
 # Create the df for mapping
-locations_df = build_locations_df(df)
+locations_df = build_locations_df(filtered_df)
 
 st.subheader("Coordinates quality check")
 
@@ -234,19 +399,29 @@ col1.metric("total rows", len(df))
 col2.metric("rows with lat", df["latitude"].notna().sum())
 col3.metric("rows with lon", df["longitude"].notna().sum())
 
-# Show how many unique locations have bene mapped
-st.metric("Total mapped locations", len(locations_df))
+# Show filtered row and mapped location counts
+col4, col5 = st.columns(2)
+col4.metric("Filtered rows", len(filtered_df))
+col5.metric("Total mapped locations", len(locations_df))
 
 # Shwo the map
 st.subheader("Support services map")
-service_map = map_creator(locations_df)
+service_map = map_creator(
+    locations_df=locations_df,
+    boundary_coords=borough_boundaries,
+    show_boundary=show_boundary
+)
 st_folium(service_map, height= 600, use_container_width=True)
 
-# Show dataset
-st.subheader("Dataset preview")
-st.dataframe(df, use_container_width=True)
+# =====
+# Filtered dataset preview
+# =====
+st.subheader("Filtered dataset preview")
+st.dataframe(filtered_df, use_container_width=True)
 
-#Check missing lat/lon
+# =====
+# Missing coordinates QA
+# =====
 st.subheader("Rows with no coordinates")
 
 missing = df[df["latitude"].isna() | df["longitude"].isna()]
