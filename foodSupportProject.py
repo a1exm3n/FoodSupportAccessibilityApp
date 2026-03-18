@@ -290,6 +290,67 @@ def unique_places(df: pd.DataFrame) -> pd.DataFrame:
     return unique_places_df
 
 # =====
+# Helper Function
+# Area accessability summary
+# =====
+def area_accessibility(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    This function returns the accessibility metrics such as:
+    number of unique service locations in the area
+    number of non-referral open-access services
+    number of days with at least one service
+    """
+
+    #unique service locatiosn by area
+    unique_services = (
+        df[["area","name","address", "postcode"]].drop_duplicates()
+        .groupby("area")
+        .size()
+        .reset_index(name="unique_services")
+    )
+
+    open_access = (
+        df[df["referral_required"] == "NO"][["area","name","address", "postcode"]].drop_duplicates()
+        .groupby("area")
+        .size()
+        .reset_index(name="open_access_services")
+    )
+
+    days = (
+        df[["area","open_days"]].drop_duplicates()
+        .groupby("area")
+        .size()
+        .reset_index(name="days")
+    )
+
+    #merge everything
+    area_summary = unique_services.merge(open_access, on="area", how="left")
+    area_summary = area_summary.merge(days, on="area", how="left")
+
+    #fill nans
+    area_summary["open_access_services"] = area_summary["open_access_services"].fillna(0)
+    area_summary["days"] = area_summary["days"].fillna(0)
+
+    #convert to int
+    area_summary["open_access_services"] = area_summary["open_access_services"].astype(int)
+    area_summary["days"] = area_summary["days"].astype(int)
+
+    #scoring
+    area_summary["accessibility_score"] = (
+            2 * area_summary["unique_services"]
+            + 1 * area_summary["open_access_services"]
+            + 1 * area_summary["days"]
+    )
+
+    #sorting
+    area_summary = area_summary.sort_values(
+        by="accessibility_score",
+        ascending=False
+    ).reset_index(drop=True)
+
+    return area_summary
+
+# =====
 # Data Loading
 # =====
 @st.cache_data(show_spinner=False) # if the input file does not change this function will not rerun, saving time
@@ -415,10 +476,11 @@ filtered_df = filtered_df[
 locations_df = build_locations_df(filtered_df)
 
 places_df = unique_places(filtered_df)
+area_access_df = area_accessibility(filtered_df)
 
 # tabs
-tab_map, tab_data, tab_stats = st.tabs(
-    ["Map", "Filtered Data", "Statistics"]
+tab_map, tab_data, tab_stats, tab_access = st.tabs(
+    ["Map", "Filtered Data", "Statistics","Accessibility Analysis"]
 )
 
 with tab_map:
@@ -536,3 +598,57 @@ with tab_stats:
     )
 
     st.altair_chart(chart_day, use_container_width=True)
+
+with tab_access:
+    st.subheader("Accessibility Analysis")
+
+    st.write(
+        "This section ranks areas using a simple accessibility score based on "
+        "the number of unique services, open-access services, and number of days covered."
+    )
+
+    if not area_access_df.empty:
+        best_area = area_access_df.iloc[0]
+        worst_area = area_access_df.iloc[-1]
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Best served area",
+            best_area["area"]
+        )
+
+        col2.metric(
+            "Highest accessibility score",
+            int(best_area["accessibility_score"])
+        )
+
+        col3.metric(
+            "Most underserved area",
+            worst_area["area"]
+        )
+
+    #Accessability
+    st.write("Accessibility score by area")
+
+    chart_access = alt.Chart(area_access_df).mark_bar().encode(
+        x=alt.X("area:N", sort="-y", title="Area"),
+        y=alt.Y("accessibility_score:Q", title="Accessibility Score"),
+        tooltip=[
+            "area",
+            "unique_services",
+            "open_access_services",
+            "days",
+            "accessibility_score"
+        ]
+    )
+
+    st.altair_chart(chart_access, use_container_width=True)
+
+    st.write("Ranked area summary")
+
+
+    st.dataframe(
+        area_access_df,
+        use_container_width=True
+    )
