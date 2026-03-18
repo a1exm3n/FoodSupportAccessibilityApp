@@ -386,7 +386,7 @@ def load_data(file_path: str) -> pd.DataFrame:
 # Main App
 # =====
 st.title("Food Support Accessibility Research")
-st.write("Version 4. Adding some stats")
+st.write("Version 5. Adding analytics")
 
 df = load_data(file_path)
 
