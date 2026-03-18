@@ -6,6 +6,7 @@ import folium
 from streamlit_folium import st_folium
 import xml.etree.ElementTree as ET
 from datetime import time, timedelta
+import altair as alt
 
 # Start with the page config
 
@@ -266,6 +267,27 @@ def map_creator(
 
     return m
 
+# =====
+# Helper Function
+# Unique places (needed for later analysis)
+# =====
+def unique_places(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    As the dataset contains multiple rows per locarion
+    to represent different opening days, we need a function
+    to extract only the unique ones
+    """
+    place_cols = [
+        "name",
+        "category",
+        "type",
+        "area",
+        "address",
+        "postcode",
+    ]
+
+    unique_places_df = df[place_cols].drop_duplicates()
+    return unique_places_df
 
 # =====
 # Data Loading
@@ -303,7 +325,7 @@ def load_data(file_path: str) -> pd.DataFrame:
 # Main App
 # =====
 st.title("Food Support Accessibility Research")
-st.write("Version 3. Added Tower Hamlets boundaries and basic filters")
+st.write("Version 4. Adding some stats")
 
 df = load_data(file_path)
 
@@ -392,37 +414,125 @@ filtered_df = filtered_df[
 # Create the df for mapping
 locations_df = build_locations_df(filtered_df)
 
-st.subheader("Coordinates quality check")
+places_df = unique_places(filtered_df)
 
-col1, col2, col3 = st.columns(3)
-col1.metric("total rows", len(df))
-col2.metric("rows with lat", df["latitude"].notna().sum())
-col3.metric("rows with lon", df["longitude"].notna().sum())
-
-# Show filtered row and mapped location counts
-col4, col5 = st.columns(2)
-col4.metric("Filtered rows", len(filtered_df))
-col5.metric("Total mapped locations", len(locations_df))
-
-# Shwo the map
-st.subheader("Support services map")
-service_map = map_creator(
-    locations_df=locations_df,
-    boundary_coords=borough_boundaries,
-    show_boundary=show_boundary
+# tabs
+tab_map, tab_data, tab_stats = st.tabs(
+    ["Map", "Filtered Data", "Statistics"]
 )
-st_folium(service_map, height= 600, use_container_width=True)
 
-# =====
-# Filtered dataset preview
-# =====
-st.subheader("Filtered dataset preview")
-st.dataframe(filtered_df, use_container_width=True)
+with tab_map:
+    st.subheader("Support Services Map")
 
-# =====
-# Missing coordinates QA
-# =====
-st.subheader("Rows with no coordinates")
+    col1, col2,col3 = st.columns(3)
 
-missing = df[df["latitude"].isna() | df["longitude"].isna()]
-st.dataframe(missing, use_container_width=True)
+    col1.metric("Total rows", len(df))
+    col2.metric("Filtered rows", len(filtered_df))
+    col3.metric("Mapped locations", len(locations_df))
+
+    places_map = map_creator(
+        locations_df=locations_df,
+        boundary_coords=borough_boundaries,
+        show_boundary=show_boundary
+    )
+
+    st_folium(places_map, height=600, use_container_width=True)
+
+with tab_data:
+    st.subheader("Filtered Dataset")
+
+    st.dataframe(filtered_df, use_container_width=True)
+
+    st.subheader("Rows with no coords")
+
+    missing = df[
+        df["latitude"].isna() | df["longitude"].isna()
+    ]
+
+    st.dataframe(missing, use_container_width=True)
+
+with tab_stats:
+    st.subheader("Statistics")
+
+    # Services by category
+    st.write("Services by category")
+
+    category_counts = (
+        places_df
+        .groupby("category")
+        .size()
+        .reset_index(name="count")
+    )
+
+    pie_category = alt.Chart(category_counts).mark_arc().encode(
+        theta="count:Q",
+        color="category:N",
+        tooltip=["category", "count"]
+    )
+
+    st.altair_chart(pie_category, use_container_width=True)
+
+    #Services by type
+    st.write("Services by type")
+
+    type_counts = (
+        places_df
+        .groupby("type")
+        .size()
+        .reset_index(name="count")
+        .sort_values("count", ascending=False)
+    )
+
+    chart_type = alt.Chart(type_counts).mark_bar().encode(
+        x=alt.X("type:N", sort="-y", title="Service Type"),
+        y=alt.Y("count:Q", title="Number of Services"),
+        tooltip=["type", "count"]
+    )
+
+    st.altair_chart(chart_type, use_container_width=True)
+
+    # Services by area
+    st.write("Services by area")
+
+    area_counts = (
+        places_df
+        .groupby("area")
+        .size()
+        .reset_index(name="count")
+        .sort_values(by="count", ascending=False)
+    )
+
+    chart_area = alt.Chart(area_counts).mark_bar().encode(
+        x = alt.X("area:N", sort="-y"),
+        y="count:Q"
+    )
+
+    st.altair_chart(chart_area, use_container_width=True)
+
+    st.write("Services by opening day")
+
+    day_counts = (
+        filtered_df
+        .groupby("open_days")
+        .size()
+        .reset_index(name="count")
+    )
+
+    day_order_df = pd.DataFrame({
+        "open_days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    })
+
+    day_counts = day_order_df.merge(day_counts, on="open_days", how="left").fillna(0)
+    day_counts["count"] = day_counts["count"].astype(int)
+
+    chart_day = alt.Chart(day_counts).mark_bar().encode(
+        x=alt.X(
+            "open_days:N",
+            sort=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            title="Opening Day"
+        ),
+        y=alt.Y("count:Q", title="Number of Services"),
+        tooltip=["open_days", "count"]
+    )
+
+    st.altair_chart(chart_day, use_container_width=True)
